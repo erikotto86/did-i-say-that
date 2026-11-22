@@ -1,0 +1,500 @@
+/* Did I Say That? — reverse-audio party game.
+ * Plain JS, no build step. Audio: getUserMedia + MediaRecorder -> decodeAudioData
+ * -> reverse each channel's Float32Array -> AudioBufferSourceNode.
+ */
+(() => {
+  'use strict';
+
+  const MAX_SECONDS = 10;          // auto-stop long recordings
+
+  // ---------- tiny helpers ----------
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+  let toastTimer;
+  function toast(msg, ms = 3200) {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+  }
+
+  // ---------- audio engine ----------
+  let ctx = null;
+  let currentSource = null;
+  let currentPlayBtns = [];
+
+  async function ensureCtx() {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      ctx = new AC();
+    }
+    if (ctx.state !== 'running') {
+      try { await ctx.resume(); } catch (_) { /* ignore */ }
+    }
+    return ctx;
+  }
+
+  // iOS Safari only lets audio start inside a user gesture; play one silent
+  // sample the first time the user taps anything so later playback works.
+  let unlocked = false;
+  function unlockAudio() {
+    if (unlocked) return;
+    unlocked = true;
+    ensureCtx().then((c) => {
+      const b = c.createBuffer(1, 1, c.sampleRate);
+      const s = c.createBufferSource();
+      s.buffer = b; s.connect(c.destination); s.start(0);
+    });
+  }
+  document.addEventListener('touchend', unlockAudio, { once: false, passive: true });
+  document.addEventListener('click', unlockAudio);
+
+  function pickMimeType() {
+    if (!window.MediaRecorder) return null;
+    const candidates = [
+      'audio/webm;codecs=opus', // Chrome, Firefox, Edge
+      'audio/mp4',              // Safari (desktop + iOS)
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+    ];
+    if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+  }
+
+  // decodeAudioData: older Safari only supports the callback form.
+  function decode(arrayBuffer) {
+    return new Promise((resolve, reject) => {
+      const p = ctx.decodeAudioData(arrayBuffer, resolve, reject);
+      if (p && typeof p.then === 'function') p.then(resolve, reject);
+    });
+  }
+
+  function reverseBuffer(buf) {
+    const out = ctx.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const data = buf.getChannelData(c).slice(); // copy
+      data.reverse();
+      out.getChannelData(c).set(data);
+    }
+    return out;
+  }
+
+  // Trim leading/trailing silence so the reversed clip doesn't start with
+  // a long dead gap (the tap-to-stop delay would otherwise lead the clip).
+  // Works on 10 ms RMS windows (not single samples) so one click/pop from the
+  // encoder or mic start-up can't dominate, and ignores the first 80 ms.
+  function trimSilence(buf) {
+    const d = buf.getChannelData(0);
+    const sr = buf.sampleRate;
+    const win = Math.max(1, Math.floor(sr * 0.01));
+    const n = Math.floor(d.length / win);
+    let peak = 0;
+    for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
+    if (n < 4) return { buffer: buf, peak, loud: peak };
+    const rms = new Float32Array(n);
+    for (let w = 0; w < n; w++) {
+      let s = 0;
+      for (let i = w * win; i < (w + 1) * win; i++) s += d[i] * d[i];
+      rms[w] = Math.sqrt(s / win);
+    }
+    const skip = Math.min(n - 1, 8); // 80 ms
+    const sorted = Array.from(rms.subarray(skip)).sort((a, b) => a - b);
+    const loud = sorted[Math.floor((sorted.length - 1) * 0.95)] || 0;
+    const noise = sorted[Math.floor((sorted.length - 1) * 0.1)] || 0;
+    if (loud < 0.002 || loud < noise * 2) return { buffer: buf, peak, loud };
+    const thresh = noise + (loud - noise) * 0.1;
+    let s = skip; while (s < n && rms[s] < thresh) s++;
+    let e = n - 1; while (e > s && rms[e] < thresh) e--;
+    const pad = Math.floor(sr * 0.12);
+    const start = Math.max(skip * win, s * win - pad);
+    const end = Math.min(d.length - 1, (e + 1) * win + pad);
+    const len = end - start + 1;
+    if (len <= 0 || len >= buf.length - 1) return { buffer: buf, peak, loud };
+    const out = ctx.createBuffer(buf.numberOfChannels, len, sr);
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      out.getChannelData(c).set(buf.getChannelData(c).subarray(start, end + 1));
+    }
+    return { buffer: out, peak, loud };
+  }
+
+  // Recording stats for debugging. Add ?debug to the URL to also send them to
+  // the local dev server's access log (the request 404s; the query string is
+  // what shows up in the log).
+  function devLog(stats) {
+    console.log('[did-i-say-that]', stats);
+    if (!new URLSearchParams(location.search).has('debug')) return;
+    const q = new URLSearchParams(Object.entries(stats).map(([k, v]) => [k, String(v)]));
+    fetch(`/__log?${q}`, { cache: 'no-store' }).catch(() => {});
+  }
+
+  // Start a recording. Returns { analyser, stop(), done: Promise<{buffer, peak}> }.
+  // iOS 17+ (Safari): after the mic has been used the page stays in a
+  // "play-and-record" session that routes output to the quiet earpiece.
+  // Switch the session type explicitly around recording vs playback.
+  function setAudioSession(type) {
+    try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (_) { /* ignore */ }
+  }
+
+  async function startRecording() {
+    setAudioSession('play-and-record');
+    await ensureCtx();
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
+    });
+    const mime = pickMimeType();
+    const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+
+    const done = new Promise((resolve, reject) => {
+      rec.onstop = async () => {
+        // Release the mic right away: on iOS an open mic routes playback to
+        // the quiet earpiece / ducks the volume.
+        stream.getTracks().forEach((t) => t.stop());
+        try { src.disconnect(); } catch (_) { /* ignore */ }
+        try {
+          if (!chunks.length) throw new Error('No audio captured');
+          const blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' });
+          const ab = await blob.arrayBuffer();
+          const decoded = await decode(ab);
+          const result = trimSilence(decoded);
+          // where is the loudest sample? (seconds from start)
+          const ch = decoded.getChannelData(0);
+          let pi = 0; for (let i = 1; i < ch.length; i++) if (Math.abs(ch[i]) > Math.abs(ch[pi])) pi = i;
+          devLog({
+            mime: rec.mimeType || mime, bytes: blob.size, chunks: chunks.length,
+            ctxRate: ctx.sampleRate, bufRate: decoded.sampleRate, ch: decoded.numberOfChannels,
+            rawDur: decoded.duration.toFixed(2), rawPeak: Math.abs(ch[pi]).toFixed(3), peakAt: (pi / decoded.sampleRate).toFixed(2),
+            loudRms: (result.loud || 0).toFixed(4), trimDur: result.buffer.duration.toFixed(2),
+            ua: navigator.userAgent.replace(/[^A-Za-z0-9./ ]/g, '').slice(0, 120),
+          });
+          resolve(result);
+        } catch (err) { reject(err); }
+      };
+      rec.onerror = (e) => {
+        stream.getTracks().forEach((t) => t.stop());
+        reject(e.error || e);
+      };
+    });
+
+    rec.start();
+    return {
+      analyser,
+      stop: () => { if (rec.state !== 'inactive') rec.stop(); },
+      done,
+    };
+  }
+
+  function stopPlayback() {
+    if (currentSource) {
+      currentSource.onended = null;
+      try { currentSource.stop(); } catch (_) { /* ignore */ }
+      currentSource = null;
+    }
+    currentPlayBtns.forEach((b) => b.classList.remove('playing'));
+    currentPlayBtns = [];
+  }
+
+  async function playBuffer(buffer, btns = []) {
+    setAudioSession('playback');
+    await ensureCtx();
+    stopPlayback();
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    currentSource = src;
+    currentPlayBtns = btns;
+    btns.forEach((b) => b.classList.add('playing'));
+    return new Promise((resolve) => {
+      src.onended = () => {
+        if (currentSource === src) { currentSource = null; }
+        btns.forEach((b) => b.classList.remove('playing'));
+        resolve();
+      };
+      src.start(0);
+    });
+  }
+
+  // ---------- game state ----------
+  const state = {
+    teams: [{ name: 'Team Rewind', score: 0 }, { name: 'Team Backspin', score: 0 }],
+    target: 10,
+    guessing: 0,           // index of the team guessing this turn (Echo's team)
+    clips: { original: null, imitation: null }, // { fwd, rev }
+    revPlays: 0,
+    recording: null,       // active recorder controller
+  };
+
+  function clipFrom(buffer) {
+    normalize(buffer);
+    return { fwd: buffer, rev: reverseBuffer(buffer) };
+  }
+
+  // Boost quiet mic recordings so the loudest moment hits ~-0.5 dBFS.
+  // Gain is capped so a near-silent take doesn't become pure hiss.
+  function normalize(buf) {
+    let peak = 0;
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
+    }
+    if (peak <= 0) return 1;
+    const gain = Math.min(0.95 / peak, 40);
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) d[i] *= gain;
+    }
+    return gain;
+  }
+
+  // ---------- screens ----------
+  function show(id) {
+    stopPlayback();
+    $$('.screen').forEach((s) => { s.hidden = s.id !== `screen-${id}`; });
+    $('#scoreboard').hidden = id === 'setup';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function paintTeams() {
+    const g = state.guessing; const o = 1 - g;
+    $$('.active-team').forEach((el) => { el.textContent = state.teams[g].name; el.className = `active-team t${g}`; });
+    $$('.other-team').forEach((el) => { el.textContent = state.teams[o].name; el.className = `other-team t${o}`; });
+    $$('.team-chip').forEach((chip) => {
+      const i = Number(chip.dataset.team);
+      $('.tname', chip).textContent = state.teams[i].name;
+      $('.tscore', chip).textContent = state.teams[i].score;
+      chip.classList.toggle('active', i === g);
+    });
+  }
+
+  // ---------- recorder widgets ----------
+  function setupRecorder(rootSel, which, labels) {
+    const root = $(rootSel);
+    const btn = $('[data-role="rec"]', root);
+    const label = $('.label', btn);
+    const fill = $('.meter-fill', root);
+    const timer = $('.timer', root);
+    const after = $(`#after-${which}`);
+
+    function reset() {
+      btn.classList.remove('recording', 'done');
+      btn.disabled = false;
+      label.textContent = labels.idle;
+      fill.style.width = '0%';
+      timer.textContent = '0.0s';
+      after.hidden = true;
+    }
+
+    btn.addEventListener('click', async () => {
+      if (state.recording && state.recording.which === which) {
+        state.recording.stop();
+        return;
+      }
+      if (state.recording) return; // another recorder busy
+      if (btn.classList.contains('done')) {
+        // tapping the green "done" button = redo
+        state.clips[which] = null;
+        reset();
+      }
+      stopPlayback();
+
+      let ctl;
+      try {
+        ctl = await startRecording();
+      } catch (err) {
+        console.error(err);
+        toast(micErrorMessage(err), 5000);
+        return;
+      }
+
+      btn.classList.add('recording');
+      label.textContent = 'Stop';
+      const t0 = performance.now();
+      const data = new Uint8Array(ctl.analyser.fftSize);
+      let raf = 0; let autoStop = 0;
+
+      const tick = () => {
+        ctl.analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+        const rms = Math.sqrt(sum / data.length);
+        fill.style.width = `${Math.min(100, rms * 400)}%`;
+        timer.textContent = `${((performance.now() - t0) / 1000).toFixed(1)}s`;
+        raf = requestAnimationFrame(tick);
+      };
+      tick();
+      autoStop = setTimeout(() => { if (state.recording) state.recording.stop(); }, MAX_SECONDS * 1000);
+
+      state.recording = {
+        which,
+        stop: () => {
+          cancelAnimationFrame(raf);
+          clearTimeout(autoStop);
+          btn.disabled = true;
+          label.textContent = '…';
+          ctl.stop();
+        },
+      };
+
+      try {
+        const { buffer, peak } = await ctl.done;
+        state.recording = null;
+        if (peak < 0.01) toast('Hmm, that was really quiet. Check the mic and maybe redo it.', 4000);
+        state.clips[which] = clipFrom(buffer);
+        btn.classList.remove('recording');
+        btn.classList.add('done');
+        btn.disabled = false;
+        label.textContent = 'Got it ✓';
+        fill.style.width = '0%';
+        timer.textContent = `${buffer.duration.toFixed(1)}s`;
+        after.hidden = false;
+        if (which === 'imitation') $('#btn-to-reveal').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (err) {
+        console.error(err);
+        state.recording = null;
+        reset();
+        toast(`Couldn't process that recording (${err && err.message ? err.message : err}). Try again.`, 5000);
+      }
+    });
+
+    return { reset };
+  }
+
+  function micErrorMessage(err) {
+    const name = err && err.name;
+    if (name === 'NotAllowedError' || name === 'SecurityError') return 'Mic access was blocked. Allow the microphone for this page (address-bar / Settings › Safari › Microphone) and try again.';
+    if (name === 'NotFoundError') return 'No microphone found on this device.';
+    if (!navigator.mediaDevices) return 'Mic needs a secure page — open it via https:// or http://localhost.';
+    return `Couldn't start the mic: ${err && err.message ? err.message : err}`;
+  }
+
+  const recOriginal = setupRecorder('#rec-original', 'original', { idle: 'Record' });
+  const recImitation = setupRecorder('#rec-imitation', 'imitation', { idle: 'Record copy' });
+
+  // ---------- play / redo buttons (delegated) ----------
+  document.addEventListener('click', (e) => {
+    const playBtn = e.target.closest('[data-play]');
+    if (playBtn) {
+      const [which, dir] = playBtn.dataset.play.split('-');
+      const clip = state.clips[which];
+      if (!clip) { toast('Nothing recorded yet.'); return; }
+      if (state.recording) { toast('Finish recording first.'); return; }
+      if (playBtn.classList.contains('playing')) { stopPlayback(); return; }
+      if (which === 'original' && dir === 'rev' && !$('#screen-echo').hidden) {
+        state.revPlays += 1;
+        $('#rev-count').textContent = `(${state.revPlays}×)`;
+      }
+      // pulse every button that plays the same thing
+      const twins = $$(`[data-play="${playBtn.dataset.play}"]`);
+      playBuffer(dir === 'rev' ? clip.rev : clip.fwd, twins);
+      return;
+    }
+    const redoBtn = e.target.closest('[data-redo]');
+    if (redoBtn) {
+      const which = redoBtn.dataset.redo;
+      stopPlayback();
+      state.clips[which] = null;
+      (which === 'original' ? recOriginal : recImitation).reset();
+    }
+  });
+
+  // ---------- setup screen ----------
+  $$('#target button').forEach((b) => b.addEventListener('click', () => {
+    $$('#target button').forEach((x) => x.classList.toggle('on', x === b));
+    state.target = Number(b.dataset.v);
+  }));
+
+  function startTurn() {
+    state.clips.original = null;
+    state.clips.imitation = null;
+    state.revPlays = 0;
+    $('#rev-count').textContent = '';
+    $('#secret').value = '';
+    $('#answer').hidden = true;
+    $('#btn-answer').hidden = false;
+    $$('[data-score]').forEach((b) => { b.disabled = false; });
+    recOriginal.reset();
+    recImitation.reset();
+    paintTeams();
+    show('speaker');
+  }
+
+  $('#btn-start').addEventListener('click', async () => {
+    await ensureCtx();
+    state.teams[0].name = $('#team0').value.trim() || 'Team 1';
+    state.teams[1].name = $('#team1').value.trim() || 'Team 2';
+    state.teams.forEach((t) => { t.score = 0; });
+    state.guessing = 0;
+    startTurn();
+  });
+
+  $('#btn-to-echo').addEventListener('click', () => {
+    if (!state.clips.original) return;
+    show('echo');
+  });
+
+  $('#btn-to-reveal').addEventListener('click', () => {
+    if (!state.clips.imitation) return;
+    show('reveal');
+  });
+
+  $('#btn-answer').addEventListener('click', () => {
+    const secret = $('#secret').value.trim();
+    $('#answer-text').textContent = secret || '(listen!)';
+    $('#answer').hidden = false;
+    $('#btn-answer').hidden = true;
+    const twins = $$('[data-play="original-fwd"]');
+    playBuffer(state.clips.original.fwd, twins);
+  });
+
+  $$('[data-score]').forEach((b) => b.addEventListener('click', () => {
+    const pts = Number(b.dataset.score);
+    $$('[data-score]').forEach((x) => { x.disabled = true; });
+    const team = state.teams[state.guessing];
+    team.score += pts;
+    paintTeams();
+    if (pts) {
+      const chip = $(`.team-chip[data-team="${state.guessing}"] .tscore`);
+      chip.classList.remove('bump'); void chip.offsetWidth; chip.classList.add('bump');
+      toast(`${team.name} +${pts}!`, 1500);
+    }
+    setTimeout(() => {
+      if (team.score >= state.target) {
+        $('#winner-text').textContent = `${team.name} wins!`;
+        $('#winner-score').textContent = `${state.teams[0].name} ${state.teams[0].score} – ${state.teams[1].score} ${state.teams[1].name}`;
+        show('winner');
+        return;
+      }
+      state.guessing = 1 - state.guessing;
+      startTurn();
+    }, pts ? 1100 : 400);
+  }));
+
+  $('#btn-again').addEventListener('click', () => {
+    state.teams.forEach((t) => { t.score = 0; });
+    state.guessing = 0;
+    startTurn();
+  });
+  $('#btn-newteams').addEventListener('click', () => show('setup'));
+
+  // ---------- capability check ----------
+  const problems = [];
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) problems.push('microphone access (open this page over https:// or http://localhost)');
+  if (!window.MediaRecorder) problems.push('audio recording (MediaRecorder) — update your browser');
+  if (!(window.AudioContext || window.webkitAudioContext)) problems.push('Web Audio');
+  if (problems.length) {
+    const w = $('#support-warn');
+    w.textContent = `Heads up: this browser is missing ${problems.join(', ')}.`;
+    w.hidden = false;
+  }
+
+  // exposed for debugging / automated checks
+  window.__didISayThat = { state, reverseBuffer, get ctx() { return ctx; } };
+})();

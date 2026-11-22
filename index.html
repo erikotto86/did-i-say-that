@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#5b2bd9">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Did I Say That?</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="logo">Did I Say <span class="flip">That?</span></h1>
+    <div class="scoreboard" id="scoreboard" hidden>
+      <div class="team-chip" data-team="0"><span class="tname"></span><span class="tscore">0</span></div>
+      <div class="team-chip" data-team="1"><span class="tname"></span><span class="tscore">0</span></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- SETUP -->
+    <section class="screen" id="screen-setup">
+      <div class="card">
+        <p class="lead">A backwards-audio party game for two teams. Someone records a phrase, it gets flipped, the other team copies the gibberish… and then <em>their</em> recording gets flipped back.</p>
+        <label class="field"><span>Team 1</span><input id="team0" maxlength="18" value="Team Rewind" autocomplete="off"></label>
+        <label class="field"><span>Team 2</span><input id="team1" maxlength="18" value="Team Backspin" autocomplete="off"></label>
+        <div class="field">
+          <span>Play to</span>
+          <div class="seg" id="target">
+            <button type="button" data-v="6">6 pts</button>
+            <button type="button" data-v="10" class="on">10 pts</button>
+            <button type="button" data-v="16">16 pts</button>
+          </div>
+        </div>
+        <button class="btn btn-go big" id="btn-start">Let's play</button>
+        <details class="howto">
+          <summary>How to play</summary>
+          <ol>
+            <li><b>Speaker</b> (from the team that's <em>not</em> guessing) secretly records a short phrase or song lyric.</li>
+            <li><b>Echo</b> (from the guessing team) hears it <b>backwards</b> and records their best imitation of the gibberish.</li>
+            <li>Hit <b>Flip it!</b> — the Echo's recording plays backwards, which should sound like the original. The guessing team calls out the phrase.</li>
+            <li>Reveal the answer. Nailed it = <b>2 pts</b>, close = <b>1 pt</b>. Teams alternate.</li>
+          </ol>
+        </details>
+        <p class="warn" id="support-warn" hidden></p>
+      </div>
+    </section>
+
+    <!-- SPEAKER RECORDS -->
+    <section class="screen" id="screen-speaker" hidden>
+      <div class="card">
+        <div class="step">Step 1 of 3 · Speaker</div>
+        <h2><span class="other-team"></span>, pick a Speaker.</h2>
+        <p class="hint"><span class="active-team"></span> — no peeking, no listening! Record a short phrase or song lyric (2–4 seconds works best).</p>
+
+        <div class="recorder" id="rec-original">
+          <button class="rec-btn" data-role="rec"><span class="dot"></span><span class="label">Record</span></button>
+          <div class="meter"><div class="meter-fill"></div></div>
+          <div class="timer">0.0s</div>
+        </div>
+
+        <div class="after" id="after-original" hidden>
+          <label class="field"><span>Secret answer (optional)</span><input id="secret" maxlength="80" placeholder="e.g. Happy birthday to you" autocomplete="off"></label>
+          <div class="row">
+            <button class="btn btn-soft" data-play="original-fwd">▶ Check it</button>
+            <button class="btn btn-soft" data-redo="original">↺ Redo</button>
+          </div>
+          <button class="btn btn-go big" id="btn-to-echo">Done — pass to <span class="active-team"></span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ECHO IMITATES -->
+    <section class="screen" id="screen-echo" hidden>
+      <div class="card">
+        <div class="step">Step 2 of 3 · Echo</div>
+        <h2><span class="active-team"></span>, pick an Echo.</h2>
+        <p class="hint">Listen to the backwards clip as many times as you like, then record yourself copying it — sounds, rhythm and all.</p>
+
+        <button class="btn btn-rev big" data-play="original-rev"><span class="rev-icon">◀◀</span> Play backwards <span class="count" id="rev-count"></span></button>
+
+        <div class="recorder" id="rec-imitation">
+          <button class="rec-btn" data-role="rec"><span class="dot"></span><span class="label">Record copy</span></button>
+          <div class="meter"><div class="meter-fill"></div></div>
+          <div class="timer">0.0s</div>
+        </div>
+
+        <div class="after" id="after-imitation" hidden>
+          <div class="row">
+            <button class="btn btn-soft" data-play="imitation-fwd">▶ Hear my copy</button>
+            <button class="btn btn-soft" data-redo="imitation">↺ Redo</button>
+          </div>
+          <button class="btn btn-go big" id="btn-to-reveal">I'm ready — flip it!</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- REVEAL -->
+    <section class="screen" id="screen-reveal" hidden>
+      <div class="card">
+        <div class="step">Step 3 of 3 · The flip</div>
+        <h2>What did they say?</h2>
+        <p class="hint"><span class="active-team"></span>: listen to the Echo flipped back, then shout your guess.</p>
+
+        <button class="btn btn-flip huge" data-play="imitation-rev">🔄 Flip it!</button>
+
+        <div class="answer" id="answer" hidden>
+          <div class="answer-label">The original was</div>
+          <div class="answer-text" id="answer-text"></div>
+        </div>
+        <button class="btn btn-soft big" id="btn-answer">👀 Reveal the answer</button>
+
+        <div class="replays">
+          <div class="replays-title">Replay</div>
+          <div class="grid">
+            <button class="btn btn-mini" data-play="original-fwd">Original ▶</button>
+            <button class="btn btn-mini" data-play="original-rev">Original ◀◀</button>
+            <button class="btn btn-mini" data-play="imitation-fwd">Copy ▶</button>
+            <button class="btn btn-mini" data-play="imitation-rev">Copy ◀◀ (flip)</button>
+          </div>
+        </div>
+
+        <div class="scoring" id="scoring">
+          <div class="replays-title">Host scores <span class="active-team"></span></div>
+          <div class="grid3">
+            <button class="btn btn-score s2" data-score="2">Nailed it<br><b>+2</b></button>
+            <button class="btn btn-score s1" data-score="1">Close<br><b>+1</b></button>
+            <button class="btn btn-score s0" data-score="0">Nope<br><b>0</b></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- WINNER -->
+    <section class="screen" id="screen-winner" hidden>
+      <div class="card center">
+        <div class="trophy">🏆</div>
+        <h2 id="winner-text"></h2>
+        <p class="hint" id="winner-score"></p>
+        <button class="btn btn-go big" id="btn-again">Rematch</button>
+        <button class="btn btn-soft" id="btn-newteams">New teams</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="app.js?v=5"></script>
+</body>
+</html>
