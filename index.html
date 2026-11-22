@@ -8,7 +8,7 @@
   <title>Did I Say That?</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
   <header class="topbar">
@@ -39,10 +39,10 @@
         <details class="howto">
           <summary>How to play</summary>
           <ol>
-            <li><b>Speaker</b> (from the team that's <em>not</em> guessing) secretly records a short phrase or song lyric.</li>
+            <li><b>Speaker</b> (from the team that's <em>not</em> guessing) secretly records a short phrase or song lyric and types it in.</li>
             <li><b>Echo</b> (from the guessing team) hears it <b>backwards</b> and records their best imitation of the gibberish.</li>
-            <li>Hit <b>Flip it!</b> — the Echo's recording plays backwards, which should sound like the original. The guessing team calls out the phrase.</li>
-            <li>Reveal the answer. Nailed it = <b>2 pts</b>, close = <b>1 pt</b>. Teams alternate.</li>
+            <li>Hit <b>Flip it!</b> — the Echo's recording plays backwards, which should sound like the original. The guessing team types their guess.</li>
+            <li>The game scores it: nailed it = <b>2 pts</b>, close = <b>1 pt</b>. Teams alternate.</li>
           </ol>
         </details>
         <p class="warn" id="support-warn" hidden></p>
@@ -63,12 +63,13 @@
         </div>
 
         <div class="after" id="after-original" hidden>
-          <label class="field"><span>Secret answer (optional)</span><input id="secret" maxlength="80" placeholder="e.g. Happy birthday to you" autocomplete="off"></label>
+          <label class="field"><span>Type exactly what you said</span><input id="secret" maxlength="80" placeholder="e.g. Happy birthday to you" autocomplete="off" enterkeyhint="done"></label>
           <div class="row">
             <button class="btn btn-soft" data-play="original-fwd">▶ Check it</button>
             <button class="btn btn-soft" data-redo="original">↺ Redo</button>
           </div>
-          <button class="btn btn-go big" id="btn-to-echo">Done — pass to <span class="active-team"></span></button>
+          <button class="btn btn-go big" id="btn-to-echo" disabled>Done — pass to <span class="active-team"></span></button>
+          <p class="hint small" id="secret-hint">Type the phrase to continue.</p>
         </div>
       </div>
     </section>
@@ -103,32 +104,41 @@
       <div class="card">
         <div class="step">Step 3 of 3 · The flip</div>
         <h2>What did they say?</h2>
-        <p class="hint"><span class="active-team"></span>: listen to the Echo flipped back, then shout your guess.</p>
+        <p class="hint"><span class="active-team"></span>: listen to the Echo's copy flipped back, talk it over, then type your guess.</p>
 
         <button class="btn btn-flip huge" data-play="imitation-rev">🔄 Flip it!</button>
 
-        <div class="answer" id="answer" hidden>
-          <div class="answer-label">The original was</div>
-          <div class="answer-text" id="answer-text"></div>
+        <div class="guess-box" id="guess-box">
+          <label class="field"><span>Your team's guess</span><input id="guess" maxlength="80" placeholder="What did they say?" autocomplete="off" enterkeyhint="done"></label>
+          <button class="btn btn-go big" id="btn-guess" disabled>🔒 Lock it in</button>
         </div>
-        <button class="btn btn-soft big" id="btn-answer">👀 Reveal the answer</button>
+
+        <div class="result" id="result" hidden>
+          <div class="verdict" id="verdict"></div>
+          <div class="answer">
+            <div class="answer-label">The phrase was</div>
+            <div class="answer-text" id="answer-text"></div>
+            <div class="answer-label">You guessed</div>
+            <div class="guess-text" id="guess-text"></div>
+          </div>
+          <div class="override">
+            <span>Not fair? Change the score:</span>
+            <div class="grid3">
+              <button class="btn btn-mini" data-override="0">0</button>
+              <button class="btn btn-mini" data-override="1">+1</button>
+              <button class="btn btn-mini" data-override="2">+2</button>
+            </div>
+          </div>
+          <button class="btn btn-go big" id="btn-next">Next turn ▶</button>
+        </div>
 
         <div class="replays">
           <div class="replays-title">Replay</div>
           <div class="grid">
-            <button class="btn btn-mini" data-play="original-fwd">Original ▶</button>
+            <button class="btn btn-mini" data-play="original-fwd" id="replay-original-fwd" hidden>Original ▶</button>
             <button class="btn btn-mini" data-play="original-rev">Original ◀◀</button>
             <button class="btn btn-mini" data-play="imitation-fwd">Copy ▶</button>
             <button class="btn btn-mini" data-play="imitation-rev">Copy ◀◀ (flip)</button>
-          </div>
-        </div>
-
-        <div class="scoring" id="scoring">
-          <div class="replays-title">Host scores <span class="active-team"></span></div>
-          <div class="grid3">
-            <button class="btn btn-score s2" data-score="2">Nailed it<br><b>+2</b></button>
-            <button class="btn btn-score s1" data-score="1">Close<br><b>+1</b></button>
-            <button class="btn btn-score s0" data-score="0">Nope<br><b>0</b></button>
           </div>
         </div>
       </div>
@@ -147,6 +157,6 @@
   </main>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

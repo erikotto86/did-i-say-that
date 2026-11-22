@@ -18,10 +18,10 @@ To play on a phone you need an HTTPS URL. A plain LAN IP won't do, because iOS b
 
 ## How a turn works
 
-1. **Speaker**: someone from the team that is *not* guessing secretly records a phrase. They can also type the answer so the host can reveal it later.
+1. **Speaker**: someone from the team that is *not* guessing secretly records a phrase and types exactly what they said. They can't pass the device on until both are done.
 2. **Echo**: someone from the guessing team plays the clip backwards as often as they like, then records an imitation.
-3. **Flip it!**: the Echo's recording plays backwards, which should sound roughly like the original. Their team shouts a guess.
-4. **Reveal**: the original plays forward and the secret answer appears. The host scores the guess: Nailed it **+2**, Close **+1**, Nope **0**.
+3. **Flip it!**: the Echo's recording plays backwards, which should sound roughly like the original. Their team types a guess and locks it in. The original stays hidden until then.
+4. **Reveal**: the game compares the guess with the phrase, ignoring capitals and punctuation. Nailed it **+2** means it matches, allowing a typo or two. Close **+1** means at least half the words are right, or most of the letters. Nope **0** otherwise. The original then plays forward. If the automatic score seems unfair, the host can change it before tapping **Next turn**.
 5. The game saves itself after every step, so a reload or an accidental refresh picks up where you left off, recordings included. Saved data stays on the device. Starting a new game from the setup screen replaces it.
 6. Teams take turns. The first team to reach the target wins (6, 10 or 16 points).
 

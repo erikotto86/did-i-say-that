@@ -157,6 +157,16 @@ main { max-width: 560px; margin: 0 auto; }
 .answer-text { font-weight: 800; font-size: 26px; line-height: 1.15; }
 
 .replays, .scoring { display: flex; flex-direction: column; gap: 8px; }
+.hint.small { font-size: 15px; text-align: center; }
+.guess-box, .result { display: flex; flex-direction: column; gap: 12px; }
+.verdict { text-align: center; font-weight: 800; font-size: 30px; line-height: 1.1; padding: 10px; border-radius: 18px; color: #fff; animation: pop .3s; }
+.verdict.v2 { background: var(--go); }
+.verdict.v1 { background: var(--rev); }
+.verdict.v0 { background: #9a8bb8; }
+.guess-text { font-weight: 700; font-size: 20px; line-height: 1.2; color: var(--muted); }
+.answer .answer-label + .answer-text + .answer-label { margin-top: 8px; }
+.override { display: flex; flex-direction: column; gap: 6px; font-size: 14px; font-weight: 700; color: var(--muted); }
+.override .btn.on { background: var(--bg1); color: #fff; box-shadow: 0 5px 0 #3d1b9a; }
 .replays-title { font-weight: 800; color: var(--muted); font-size: 15px; text-transform: uppercase; letter-spacing: .05em; }
 .btn-score { font-size: 17px; line-height: 1.1; padding: 12px 6px; color: #fff; }
 .btn-score b { font-size: 26px; }

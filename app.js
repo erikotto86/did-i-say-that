@@ -254,7 +254,9 @@
     screen: 'setup',
     secret: '',
     revPlays: 0,
-    answerShown: false,
+    guess: '',
+    guessLocked: false,
+    pendingScore: null,  // auto score (0/1/2), host can override before Next turn
     winner: null,
     clips: { original: null, imitation: null }, // { fwd, rev }
     recording: null,       // active recorder controller (never saved)
@@ -293,7 +295,8 @@
       localStorage.setItem(SAVE_KEY, JSON.stringify({
         teams: state.teams, target: state.target, guessing: state.guessing,
         screen: state.screen, secret: state.secret, revPlays: state.revPlays,
-        answerShown: state.answerShown, winner: state.winner,
+        guess: state.guess, guessLocked: state.guessLocked,
+        pendingScore: state.pendingScore, winner: state.winner,
       }));
     } catch (_) { /* storage unavailable */ }
   }
@@ -446,6 +449,7 @@
         state.clips[which] = clipFrom(buffer);
         clipStore.put(which, state.clips[which].fwd);
         markDone(buffer.duration);
+        refreshPassBtn();
         if (which === 'imitation') $('#btn-to-reveal').scrollIntoView({ behavior: 'smooth', block: 'center' });
       } catch (err) {
         console.error(err);
@@ -475,6 +479,7 @@
     state.clips[which] = null;
     clipStore.del(which);
     recorders[which].reset();
+    refreshPassBtn();
   }
 
   // ---------- play / redo buttons (delegated) ----------
@@ -517,7 +522,9 @@
     state.clips.imitation = null;
     state.revPlays = 0;
     state.secret = '';
-    state.answerShown = false;
+    state.guess = '';
+    state.guessLocked = false;
+    state.pendingScore = null;
     state.winner = null;
     clipStore.clear();
   }
@@ -526,14 +533,13 @@
   function paintTurn() {
     $('#rev-count').textContent = state.revPlays ? `(${state.revPlays}×)` : '';
     $('#secret').value = state.secret;
-    $('#answer-text').textContent = state.secret.trim() || '(listen!)';
-    $('#answer').hidden = !state.answerShown;
-    $('#btn-answer').hidden = state.answerShown;
-    $$('[data-score]').forEach((b) => { b.disabled = false; });
+    $('#guess').value = state.guess;
     ['original', 'imitation'].forEach((w) => {
       recorders[w].reset();
       if (state.clips[w]) recorders[w].markDone(state.clips[w].fwd.duration);
     });
+    refreshPassBtn();
+    paintGuess();
     paintTeams();
   }
 
@@ -563,10 +569,14 @@
   $('#secret').addEventListener('input', (e) => {
     state.secret = e.target.value;
     save();
+    refreshPassBtn();
   });
+  $('#secret').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
 
   $('#btn-to-echo').addEventListener('click', () => {
     if (!state.clips.original) return;
+    if (!state.secret.trim()) { toast('Type the phrase first.'); $('#secret').focus(); return; }
+    $('#secret').blur();
     show('echo');
   });
 
@@ -575,19 +585,103 @@
     show('reveal');
   });
 
-  $('#btn-answer').addEventListener('click', () => {
-    state.answerShown = true;
-    save();
-    $('#answer-text').textContent = state.secret.trim() || '(listen!)';
-    $('#answer').hidden = false;
-    $('#btn-answer').hidden = true;
-    const twins = $$('[data-play="original-fwd"]');
-    playBuffer(state.clips.original.fwd, twins);
-  });
+  // ---------- guessing & automatic scoring ----------
+  function norm(str) {
+    return String(str).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/['’`]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+  }
 
-  $$('[data-score]').forEach((b) => b.addEventListener('click', () => {
-    const pts = Number(b.dataset.score);
-    $$('[data-score]').forEach((x) => { x.disabled = true; });
+  function lev(a, b) {
+    if (a === b) return 0;
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+
+  // 2 = nailed it: same phrase ignoring case, punctuation and spacing, with
+  //     a typo or two allowed (90%+ of the letters match).
+  // 1 = close: at least half the words (small typos OK in longer words),
+  //     or 60%+ of the letters match.
+  // 0 = nope.
+  function judgeGuess(phrase, guess) {
+    const p = norm(phrase); const g = norm(guess);
+    if (!p || !g) return 0;
+    const ps = p.replace(/ /g, ''); const gs = g.replace(/ /g, '');
+    const sim = 1 - lev(ps, gs) / Math.max(ps.length, gs.length);
+    if (sim >= 0.9) return 2;
+    const pw = p.split(' '); const gw = g.split(' ');
+    const used = new Set(); let hits = 0;
+    for (const w of pw) {
+      const i = gw.findIndex((x, j) => !used.has(j) && (x === w || (w.length >= 4 && lev(x, w) <= 1)));
+      if (i >= 0) { used.add(i); hits++; }
+    }
+    if (hits / pw.length >= 0.5 || sim >= 0.6) return 1;
+    return 0;
+  }
+
+  const VERDICTS = { 2: 'Nailed it! +2', 1: 'Close! +1', 0: 'Nope — 0 points' };
+
+  function refreshPassBtn() {
+    const hasClip = !!state.clips.original;
+    const hasPhrase = !!state.secret.trim();
+    $('#btn-to-echo').disabled = !(hasClip && hasPhrase);
+    $('#secret-hint').hidden = !hasClip || hasPhrase;
+  }
+
+  function paintGuess() {
+    const locked = state.guessLocked;
+    $('#guess-box').hidden = locked;
+    $('#result').hidden = !locked;
+    $('#replay-original-fwd').hidden = !locked; // no peeking at the original before guessing
+    $('#btn-guess').disabled = !state.guess.trim();
+    $('#btn-next').disabled = false;
+    if (!locked) return;
+    const pts = state.pendingScore ?? 0;
+    const v = $('#verdict');
+    v.textContent = VERDICTS[pts];
+    v.className = `verdict v${pts}`;
+    $('#answer-text').textContent = state.secret;
+    $('#guess-text').textContent = state.guess;
+    $$('[data-override]').forEach((b) => b.classList.toggle('on', Number(b.dataset.override) === pts));
+  }
+
+  function lockGuess() {
+    if (state.guessLocked || !state.guess.trim()) return;
+    state.guessLocked = true;
+    state.pendingScore = judgeGuess(state.secret, state.guess);
+    save();
+    $('#guess').blur();
+    paintGuess();
+    playBuffer(state.clips.original.fwd, $$('[data-play="original-fwd"]'));
+    $('#result').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  $('#guess').addEventListener('input', (e) => {
+    state.guess = e.target.value;
+    $('#btn-guess').disabled = !state.guess.trim();
+    save();
+  });
+  $('#guess').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lockGuess(); } });
+  $('#btn-guess').addEventListener('click', lockGuess);
+
+  $$('[data-override]').forEach((b) => b.addEventListener('click', () => {
+    state.pendingScore = Number(b.dataset.override);
+    save();
+    paintGuess();
+  }));
+
+  $('#btn-next').addEventListener('click', () => commitScore(state.pendingScore ?? 0));
+
+  function commitScore(pts) {
+    $('#btn-next').disabled = true;
     const g = state.guessing;
     const team = state.teams[g];
     team.score += pts;
@@ -614,7 +708,7 @@
       paintTurn();
       show('speaker');
     }, pts ? 1100 : 400);
-  }));
+  }
 
   $('#btn-again').addEventListener('click', () => {
     state.teams.forEach((t) => { t.score = 0; });
@@ -645,7 +739,9 @@
     state.guessing = s.guessing === 1 ? 1 : 0;
     state.secret = typeof s.secret === 'string' ? s.secret : '';
     state.revPlays = Number(s.revPlays) || 0;
-    state.answerShown = !!s.answerShown;
+    state.guess = typeof s.guess === 'string' ? s.guess : '';
+    state.guessLocked = !!s.guessLocked;
+    state.pendingScore = [0, 1, 2].includes(s.pendingScore) ? s.pendingScore : null;
     state.winner = s.winner === 0 || s.winner === 1 ? s.winner : null;
     $('#team0').value = state.teams[0].name;
     $('#team1').value = state.teams[1].name;
@@ -672,7 +768,9 @@
     // Fall back to the furthest screen the saved recordings support.
     if (!state.clips.original) screen = 'speaker';
     else if (screen === 'reveal' && !state.clips.imitation) screen = 'echo';
-    if (screen !== 'reveal') state.answerShown = false;
+    // Saves from before the phrase was required may have no phrase yet.
+    if (!state.secret.trim()) screen = 'speaker';
+    if (screen !== 'reveal' || state.pendingScore === null) state.guessLocked = false;
 
     paintTurn();
     show(screen);
