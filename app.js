@@ -26,15 +26,39 @@
   let currentPlayBtns = [];
 
   async function ensureCtx() {
-    if (!ctx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      ctx = new AC();
-    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!ctx || ctx.state === 'closed') ctx = new AC();
+    if (ctx.state !== 'running') await resumeWithTimeout(ctx);
     if (ctx.state !== 'running') {
-      try { await ctx.resume(); } catch (_) { /* ignore */ }
+      // Safari can leave a context stuck "suspended"/"interrupted" (e.g. one
+      // made before any tap, or after the audio session changed). Start a
+      // fresh one; AudioBuffers work with any context.
+      try { ctx.close(); } catch (_) { /* ignore */ }
+      ctx = new AC();
+      await resumeWithTimeout(ctx);
     }
     return ctx;
   }
+
+  // resume() can hang forever in Safari when it isn't allowed to start.
+  function resumeWithTimeout(c, ms = 400) {
+    return Promise.race([
+      c.resume().catch(() => {}),
+      new Promise((r) => setTimeout(r, ms)),
+    ]);
+  }
+
+  // Make an AudioBuffer without needing an AudioContext (so restoring a saved
+  // game never creates one before the user taps).
+  function makeBuffer(channels, length, sampleRate) {
+    try {
+      return new AudioBuffer({ numberOfChannels: channels, length, sampleRate });
+    } catch (_) {
+      if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; ctx = new AC(); }
+      return ctx.createBuffer(channels, length, sampleRate);
+    }
+  }
+
 
   // iOS Safari only lets audio start inside a user gesture; play one silent
   // sample the first time the user taps anything so later playback works.
@@ -72,7 +96,7 @@
   }
 
   function reverseBuffer(buf) {
-    const out = ctx.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+    const out = makeBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
     for (let c = 0; c < buf.numberOfChannels; c++) {
       const data = buf.getChannelData(c).slice(); // copy
       data.reverse();
@@ -112,7 +136,7 @@
     const end = Math.min(d.length - 1, (e + 1) * win + pad);
     const len = end - start + 1;
     if (len <= 0 || len >= buf.length - 1) return { buffer: buf, peak, loud };
-    const out = ctx.createBuffer(buf.numberOfChannels, len, sr);
+    const out = makeBuffer(buf.numberOfChannels, len, sr);
     for (let c = 0; c < buf.numberOfChannels; c++) {
       out.getChannelData(c).set(buf.getChannelData(c).subarray(start, end + 1));
     }
@@ -635,13 +659,12 @@
       else { showWinner(); toast('Game restored'); return; }
     }
 
-    // Rebuild recordings (an AudioContext can be created before a tap; it
-    // just stays suspended until ensureCtx() resumes it on the next gesture).
-    if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; ctx = new AC(); }
+    // Rebuild recordings. No AudioContext here: Safari won't play through a
+    // context created before the user taps (see makeBuffer / ensureCtx).
     for (const which of ['original', 'imitation']) {
       const rec = await clipStore.get(which);
       if (rec && rec.data && rec.data.length) {
-        const buf = ctx.createBuffer(1, rec.data.length, rec.rate);
+        const buf = makeBuffer(1, rec.data.length, rec.rate);
         buf.getChannelData(0).set(rec.data);
         state.clips[which] = clipFrom(buf, false); // already normalized
       }
