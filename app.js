@@ -227,13 +227,17 @@
     teams: [{ name: 'Team Rewind', score: 0 }, { name: 'Team Backspin', score: 0 }],
     target: 10,
     guessing: 0,           // index of the team guessing this turn (Echo's team)
-    clips: { original: null, imitation: null }, // { fwd, rev }
+    screen: 'setup',
+    secret: '',
     revPlays: 0,
-    recording: null,       // active recorder controller
+    answerShown: false,
+    winner: null,
+    clips: { original: null, imitation: null }, // { fwd, rev }
+    recording: null,       // active recorder controller (never saved)
   };
 
-  function clipFrom(buffer) {
-    normalize(buffer);
+  function clipFrom(buffer, doNormalize = true) {
+    if (doNormalize) normalize(buffer);
     return { fwd: buffer, rev: reverseBuffer(buffer) };
   }
 
@@ -254,11 +258,70 @@
     return gain;
   }
 
+  // ---------- saving (survives reload / refresh) ----------
+  // Game state -> localStorage. Recordings -> IndexedDB (raw samples of the
+  // forward clip; the reversed copy is rebuilt on load). Everything is
+  // best-effort: private browsing or blocked storage just means no resume.
+  const SAVE_KEY = 'did-i-say-that:v1';
+
+  function save() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        teams: state.teams, target: state.target, guessing: state.guessing,
+        screen: state.screen, secret: state.secret, revPlays: state.revPlays,
+        answerShown: state.answerShown, winner: state.winner,
+      }));
+    } catch (_) { /* storage unavailable */ }
+  }
+
+  function loadSaved() {
+    try { return JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (_) { return null; }
+  }
+
+  const clipStore = (() => {
+    let dbp = null;
+    function open() {
+      if (!dbp) {
+        dbp = new Promise((resolve, reject) => {
+          const req = indexedDB.open('did-i-say-that', 1);
+          req.onupgradeneeded = () => req.result.createObjectStore('clips');
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+      return dbp;
+    }
+    async function run(mode, fn) {
+      try {
+        const db = await open();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction('clips', mode);
+          const req = fn(tx.objectStore('clips'));
+          tx.oncomplete = () => resolve(req && req.result);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+        });
+      } catch (err) {
+        console.warn('[did-i-say-that] clip storage unavailable', err);
+        return undefined;
+      }
+    }
+    return {
+      put: (which, buf) => run('readwrite', (s) => s.put({ rate: buf.sampleRate, data: buf.getChannelData(0).slice() }, which)),
+      get: (which) => run('readonly', (s) => s.get(which)),
+      del: (which) => run('readwrite', (s) => s.delete(which)),
+      clear: () => run('readwrite', (s) => s.clear()),
+    };
+  })();
+
   // ---------- screens ----------
   function show(id) {
     stopPlayback();
+    state.screen = id;
+    save();
     $$('.screen').forEach((s) => { s.hidden = s.id !== `screen-${id}`; });
     $('#scoreboard').hidden = id === 'setup';
+    $('#btn-newgame').hidden = id === 'setup';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -292,6 +355,16 @@
       after.hidden = true;
     }
 
+    function markDone(duration) {
+      btn.classList.remove('recording');
+      btn.classList.add('done');
+      btn.disabled = false;
+      label.textContent = 'Got it ✓';
+      fill.style.width = '0%';
+      timer.textContent = `${duration.toFixed(1)}s`;
+      after.hidden = false;
+    }
+
     btn.addEventListener('click', async () => {
       if (state.recording && state.recording.which === which) {
         state.recording.stop();
@@ -300,8 +373,7 @@
       if (state.recording) return; // another recorder busy
       if (btn.classList.contains('done')) {
         // tapping the green "done" button = redo
-        state.clips[which] = null;
-        reset();
+        discardClip(which);
       }
       stopPlayback();
 
@@ -348,13 +420,8 @@
         state.recording = null;
         if (peak < 0.01) toast('Hmm, that was really quiet. Check the mic and maybe redo it.', 4000);
         state.clips[which] = clipFrom(buffer);
-        btn.classList.remove('recording');
-        btn.classList.add('done');
-        btn.disabled = false;
-        label.textContent = 'Got it ✓';
-        fill.style.width = '0%';
-        timer.textContent = `${buffer.duration.toFixed(1)}s`;
-        after.hidden = false;
+        clipStore.put(which, state.clips[which].fwd);
+        markDone(buffer.duration);
         if (which === 'imitation') $('#btn-to-reveal').scrollIntoView({ behavior: 'smooth', block: 'center' });
       } catch (err) {
         console.error(err);
@@ -364,7 +431,7 @@
       }
     });
 
-    return { reset };
+    return { reset, markDone };
   }
 
   function micErrorMessage(err) {
@@ -375,8 +442,16 @@
     return `Couldn't start the mic: ${err && err.message ? err.message : err}`;
   }
 
-  const recOriginal = setupRecorder('#rec-original', 'original', { idle: 'Record' });
-  const recImitation = setupRecorder('#rec-imitation', 'imitation', { idle: 'Record copy' });
+  const recorders = {
+    original: setupRecorder('#rec-original', 'original', { idle: 'Record' }),
+    imitation: setupRecorder('#rec-imitation', 'imitation', { idle: 'Record copy' }),
+  };
+
+  function discardClip(which) {
+    state.clips[which] = null;
+    clipStore.del(which);
+    recorders[which].reset();
+  }
 
   // ---------- play / redo buttons (delegated) ----------
   document.addEventListener('click', (e) => {
@@ -387,9 +462,10 @@
       if (!clip) { toast('Nothing recorded yet.'); return; }
       if (state.recording) { toast('Finish recording first.'); return; }
       if (playBtn.classList.contains('playing')) { stopPlayback(); return; }
-      if (which === 'original' && dir === 'rev' && !$('#screen-echo').hidden) {
+      if (which === 'original' && dir === 'rev' && state.screen === 'echo') {
         state.revPlays += 1;
         $('#rev-count').textContent = `(${state.revPlays}×)`;
+        save();
       }
       // pulse every button that plays the same thing
       const twins = $$(`[data-play="${playBtn.dataset.play}"]`);
@@ -398,32 +474,57 @@
     }
     const redoBtn = e.target.closest('[data-redo]');
     if (redoBtn) {
-      const which = redoBtn.dataset.redo;
       stopPlayback();
-      state.clips[which] = null;
-      (which === 'original' ? recOriginal : recImitation).reset();
+      discardClip(redoBtn.dataset.redo);
     }
   });
 
   // ---------- setup screen ----------
+  function paintTarget() {
+    $$('#target button').forEach((x) => x.classList.toggle('on', Number(x.dataset.v) === state.target));
+  }
   $$('#target button').forEach((b) => b.addEventListener('click', () => {
-    $$('#target button').forEach((x) => x.classList.toggle('on', x === b));
     state.target = Number(b.dataset.v);
+    paintTarget();
   }));
 
-  function startTurn() {
+  function resetTurnState() {
     state.clips.original = null;
     state.clips.imitation = null;
     state.revPlays = 0;
-    $('#rev-count').textContent = '';
-    $('#secret').value = '';
-    $('#answer').hidden = true;
-    $('#btn-answer').hidden = false;
+    state.secret = '';
+    state.answerShown = false;
+    state.winner = null;
+    clipStore.clear();
+  }
+
+  // Paint the turn screens from state (used for new turns and after a reload).
+  function paintTurn() {
+    $('#rev-count').textContent = state.revPlays ? `(${state.revPlays}×)` : '';
+    $('#secret').value = state.secret;
+    $('#answer-text').textContent = state.secret.trim() || '(listen!)';
+    $('#answer').hidden = !state.answerShown;
+    $('#btn-answer').hidden = state.answerShown;
     $$('[data-score]').forEach((b) => { b.disabled = false; });
-    recOriginal.reset();
-    recImitation.reset();
+    ['original', 'imitation'].forEach((w) => {
+      recorders[w].reset();
+      if (state.clips[w]) recorders[w].markDone(state.clips[w].fwd.duration);
+    });
     paintTeams();
+  }
+
+  function startTurn() {
+    resetTurnState();
+    paintTurn();
     show('speaker');
+  }
+
+  function showWinner() {
+    const w = state.teams[state.winner];
+    $('#winner-text').textContent = `${w.name} wins!`;
+    $('#winner-score').textContent = `${state.teams[0].name} ${state.teams[0].score} – ${state.teams[1].score} ${state.teams[1].name}`;
+    paintTeams();
+    show('winner');
   }
 
   $('#btn-start').addEventListener('click', async () => {
@@ -433,6 +534,11 @@
     state.teams.forEach((t) => { t.score = 0; });
     state.guessing = 0;
     startTurn();
+  });
+
+  $('#secret').addEventListener('input', (e) => {
+    state.secret = e.target.value;
+    save();
   });
 
   $('#btn-to-echo').addEventListener('click', () => {
@@ -446,8 +552,9 @@
   });
 
   $('#btn-answer').addEventListener('click', () => {
-    const secret = $('#secret').value.trim();
-    $('#answer-text').textContent = secret || '(listen!)';
+    state.answerShown = true;
+    save();
+    $('#answer-text').textContent = state.secret.trim() || '(listen!)';
     $('#answer').hidden = false;
     $('#btn-answer').hidden = true;
     const twins = $$('[data-play="original-fwd"]');
@@ -457,23 +564,31 @@
   $$('[data-score]').forEach((b) => b.addEventListener('click', () => {
     const pts = Number(b.dataset.score);
     $$('[data-score]').forEach((x) => { x.disabled = true; });
-    const team = state.teams[state.guessing];
+    const g = state.guessing;
+    const team = state.teams[g];
     team.score += pts;
-    paintTeams();
+    $(`.team-chip[data-team="${g}"] .tscore`).textContent = team.score;
     if (pts) {
-      const chip = $(`.team-chip[data-team="${state.guessing}"] .tscore`);
+      const chip = $(`.team-chip[data-team="${g}"] .tscore`);
       chip.classList.remove('bump'); void chip.offsetWidth; chip.classList.add('bump');
       toast(`${team.name} +${pts}!`, 1500);
     }
+    // Commit the outcome now, so a reload during the celebration can't
+    // score the same turn twice.
+    const won = team.score >= state.target;
+    if (won) {
+      state.winner = g;
+      state.screen = 'winner';
+    } else {
+      state.guessing = 1 - g;
+      resetTurnState();
+      state.screen = 'speaker';
+    }
+    save();
     setTimeout(() => {
-      if (team.score >= state.target) {
-        $('#winner-text').textContent = `${team.name} wins!`;
-        $('#winner-score').textContent = `${state.teams[0].name} ${state.teams[0].score} – ${state.teams[1].score} ${state.teams[1].name}`;
-        show('winner');
-        return;
-      }
-      state.guessing = 1 - state.guessing;
-      startTurn();
+      if (won) { showWinner(); return; }
+      paintTurn();
+      show('speaker');
     }, pts ? 1100 : 400);
   }));
 
@@ -483,6 +598,63 @@
     startTurn();
   });
   $('#btn-newteams').addEventListener('click', () => show('setup'));
+
+  // Abandon the current game: back to setup (team names stay filled in).
+  $('#btn-newgame').addEventListener('click', () => {
+    if (state.recording) { toast('Finish recording first.'); return; }
+    if (state.screen !== 'winner' && !window.confirm('Start a new game? Scores and recordings from this game will be lost.')) return;
+    resetTurnState();
+    state.teams.forEach((t) => { t.score = 0; });
+    state.guessing = 0;
+    $('#team0').value = state.teams[0].name;
+    $('#team1').value = state.teams[1].name;
+    paintTarget();
+    show('setup');
+  });
+
+  // ---------- resume after reload ----------
+  async function restore() {
+    const s = loadSaved();
+    if (!s || !Array.isArray(s.teams) || s.teams.length !== 2) return;
+    state.teams = s.teams.map((t, i) => ({ name: String(t.name || `Team ${i + 1}`), score: Number(t.score) || 0 }));
+    state.target = [6, 10, 16].includes(s.target) ? s.target : 10;
+    state.guessing = s.guessing === 1 ? 1 : 0;
+    state.secret = typeof s.secret === 'string' ? s.secret : '';
+    state.revPlays = Number(s.revPlays) || 0;
+    state.answerShown = !!s.answerShown;
+    state.winner = s.winner === 0 || s.winner === 1 ? s.winner : null;
+    $('#team0').value = state.teams[0].name;
+    $('#team1').value = state.teams[1].name;
+    paintTarget();
+
+    let screen = s.screen;
+    if (!['speaker', 'echo', 'reveal', 'winner'].includes(screen)) return; // stay on setup
+
+    if (screen === 'winner') {
+      if (state.winner === null) screen = 'speaker';
+      else { showWinner(); toast('Game restored'); return; }
+    }
+
+    // Rebuild recordings (an AudioContext can be created before a tap; it
+    // just stays suspended until ensureCtx() resumes it on the next gesture).
+    if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; ctx = new AC(); }
+    for (const which of ['original', 'imitation']) {
+      const rec = await clipStore.get(which);
+      if (rec && rec.data && rec.data.length) {
+        const buf = ctx.createBuffer(1, rec.data.length, rec.rate);
+        buf.getChannelData(0).set(rec.data);
+        state.clips[which] = clipFrom(buf, false); // already normalized
+      }
+    }
+    // Fall back to the furthest screen the saved recordings support.
+    if (!state.clips.original) screen = 'speaker';
+    else if (screen === 'reveal' && !state.clips.imitation) screen = 'echo';
+    if (screen !== 'reveal') state.answerShown = false;
+
+    paintTurn();
+    show(screen);
+    toast('Game restored');
+  }
 
   // ---------- capability check ----------
   const problems = [];
@@ -494,6 +666,8 @@
     w.textContent = `Heads up: this browser is missing ${problems.join(', ')}.`;
     w.hidden = false;
   }
+
+  restore().catch((err) => console.warn('[did-i-say-that] restore failed', err));
 
   // exposed for debugging / automated checks
   window.__didISayThat = { state, reverseBuffer, get ctx() { return ctx; } };

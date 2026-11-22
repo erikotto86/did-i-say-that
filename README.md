@@ -22,7 +22,8 @@ To play on a phone you need an HTTPS URL. A plain LAN IP won't do, because iOS b
 2. **Echo**: someone from the guessing team plays the clip backwards as often as they like, then records an imitation.
 3. **Flip it!**: the Echo's recording plays backwards, which should sound roughly like the original. Their team shouts a guess.
 4. **Reveal**: the original plays forward and the secret answer appears. The host scores the guess: Nailed it **+2**, Close **+1**, Nope **0**.
-5. Teams take turns. The first team to reach the target wins (6, 10 or 16 points).
+5. The game saves itself after every step, so a reload or an accidental refresh picks up where you left off, recordings included. Saved data stays on the device. Starting a new game from the setup screen replaces it.
+6. Teams take turns. The first team to reach the target wins (6, 10 or 16 points).
 
 ## Audio notes
 

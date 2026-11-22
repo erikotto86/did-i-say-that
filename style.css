@@ -58,6 +58,13 @@ input { -webkit-user-select: text; user-select: text; }
 .team-chip .tscore.bump { animation: bump .6s; }
 @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.5); } 100% { transform: scale(1); } }
 
+.new-game {
+  margin-top: 10px; font: inherit; font-weight: 700; font-size: 15px; color: #fff;
+  background: rgba(255,255,255,.14); border: 2px solid rgba(255,255,255,.45); border-radius: 999px;
+  padding: 4px 14px; cursor: pointer; touch-action: manipulation;
+}
+.new-game:active { background: rgba(255,255,255,.3); }
+
 main { max-width: 560px; margin: 0 auto; }
 .screen { animation: pop .3s ease-out; }
 @keyframes pop { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
