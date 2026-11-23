@@ -8,7 +8,7 @@
   <title>Did I Say That?</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <header class="topbar">
@@ -82,6 +82,14 @@
         <p class="hint">Listen to the backwards clip as many times as you like, then record yourself copying it — sounds, rhythm and all.</p>
 
         <button class="btn btn-rev big" data-play="original-rev"><span class="rev-icon">◀◀</span> Play backwards <span class="count" id="rev-count"></span></button>
+        <div class="field speed-field">
+          <span>Speed</span>
+          <div class="seg" id="speed">
+            <button type="button" data-speed="1" class="on">Normal</button>
+            <button type="button" data-speed="0.75">¾ speed</button>
+            <button type="button" data-speed="0.5">½ speed</button>
+          </div>
+        </div>
 
         <div class="recorder" id="rec-imitation">
           <button class="rec-btn" data-role="rec"><span class="dot"></span><span class="label">Record copy</span></button>
@@ -157,6 +165,6 @@
   </main>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

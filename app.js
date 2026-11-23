@@ -226,12 +226,14 @@
     currentPlayBtns = [];
   }
 
-  async function playBuffer(buffer, btns = []) {
+  // rate < 1 plays slower (and lower, like a slowed-down tape).
+  async function playBuffer(buffer, btns = [], rate = 1) {
     setAudioSession('playback');
     await ensureCtx();
     stopPlayback();
     const src = ctx.createBufferSource();
     src.buffer = buffer;
+    src.playbackRate.value = rate;
     src.connect(ctx.destination);
     currentSource = src;
     currentPlayBtns = btns;
@@ -254,6 +256,7 @@
     screen: 'setup',
     secret: '',
     revPlays: 0,
+    revSpeed: 1,           // playback speed for the backwards original (kept across turns)
     guess: '',
     guessLocked: false,
     pendingScore: null,  // auto score (0/1/2), host can override before Next turn
@@ -294,7 +297,7 @@
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify({
         teams: state.teams, target: state.target, guessing: state.guessing,
-        screen: state.screen, secret: state.secret, revPlays: state.revPlays,
+        screen: state.screen, secret: state.secret, revPlays: state.revPlays, revSpeed: state.revSpeed,
         guess: state.guess, guessLocked: state.guessLocked,
         pendingScore: state.pendingScore, winner: state.winner,
       }));
@@ -498,7 +501,9 @@
       }
       // pulse every button that plays the same thing
       const twins = $$(`[data-play="${playBtn.dataset.play}"]`);
-      playBuffer(dir === 'rev' ? clip.rev : clip.fwd, twins);
+      // The speed choice only slows the backwards original (the hard one to follow).
+      const rate = which === 'original' && dir === 'rev' ? state.revSpeed : 1;
+      playBuffer(dir === 'rev' ? clip.rev : clip.fwd, twins, rate);
       return;
     }
     const redoBtn = e.target.closest('[data-redo]');
@@ -507,6 +512,21 @@
       discardClip(redoBtn.dataset.redo);
     }
   });
+
+  // ---------- backwards-clip speed ----------
+  function paintSpeed() {
+    $$('#speed button').forEach((x) => x.classList.toggle('on', Number(x.dataset.speed) === state.revSpeed));
+  }
+  $$('#speed button').forEach((b) => b.addEventListener('click', () => {
+    state.revSpeed = Number(b.dataset.speed);
+    paintSpeed();
+    save();
+    // If the clip is playing, restart it at the new speed.
+    const playBtn = $('#screen-echo [data-play="original-rev"]');
+    if (playBtn.classList.contains('playing') && state.clips.original) {
+      playBuffer(state.clips.original.rev, $$('[data-play="original-rev"]'), state.revSpeed);
+    }
+  }));
 
   // ---------- setup screen ----------
   function paintTarget() {
@@ -739,6 +759,8 @@
     state.guessing = s.guessing === 1 ? 1 : 0;
     state.secret = typeof s.secret === 'string' ? s.secret : '';
     state.revPlays = Number(s.revPlays) || 0;
+    state.revSpeed = [1, 0.75, 0.5].includes(s.revSpeed) ? s.revSpeed : 1;
+    paintSpeed();
     state.guess = typeof s.guess === 'string' ? s.guess : '';
     state.guessLocked = !!s.guessLocked;
     state.pendingScore = [0, 1, 2].includes(s.pendingScore) ? s.pendingScore : null;
