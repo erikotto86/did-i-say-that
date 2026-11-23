@@ -267,7 +267,71 @@
 
   function clipFrom(buffer, doNormalize = true) {
     if (doNormalize) normalize(buffer);
-    return { fwd: buffer, rev: reverseBuffer(buffer) };
+    return { fwd: buffer, rev: reverseBuffer(buffer), slow: {} };
+  }
+
+  // ---------- slow down without lowering the pitch ----------
+  // WSOLA time-stretch: chop the clip into overlapping 40 ms windows and lay
+  // them out further apart, nudging each window (±12 ms) to where it lines
+  // up best with the previous one so the voice stays smooth. Output is
+  // 1/rate times longer at the same pitch. Mono (recordings are mono anyway).
+  function timeStretch(buf, rate) {
+    const x = buf.getChannelData(0);
+    const sr = buf.sampleRate;
+    const N = Math.round(sr * 0.04) & ~1;   // window length (even)
+    const Hs = N / 2;                       // output hop (50% overlap)
+    const Ha = Hs * rate;                   // input hop
+    const tol = Math.round(sr * 0.012);     // search range for best alignment
+    const outLen = Math.ceil(x.length / rate);
+    const y = new Float32Array(outLen + N);
+    const wsum = new Float32Array(outLen + N);
+    const win = new Float32Array(N);
+    for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+    const at = (i) => (i >= 0 && i < x.length ? x[i] : 0);
+
+    let prev = 0;
+    for (let k = 0; ; k++) {
+      const ideal = Math.round(k * Ha);
+      if (ideal >= x.length) break;
+      let pos = ideal;
+      if (k > 0) {
+        const target = prev + Hs; // where the previous window naturally continues
+        // coarse search (every 2nd offset, every 4th sample) ...
+        let best = -Infinity; let bestOff = 0;
+        for (let off = -tol; off <= tol; off += 2) {
+          const c = ideal + off; let s = 0;
+          for (let i = 0; i < N; i += 4) s += at(c + i) * at(target + i);
+          if (s > best) { best = s; bestOff = off; }
+        }
+        // ... then refine around the winner at full resolution
+        let best2 = -Infinity; let fine = bestOff;
+        for (let off = Math.max(-tol, bestOff - 2); off <= Math.min(tol, bestOff + 2); off++) {
+          const c = ideal + off; let s = 0;
+          for (let i = 0; i < N; i++) s += at(c + i) * at(target + i);
+          if (s > best2) { best2 = s; fine = off; }
+        }
+        pos = ideal + fine;
+      }
+      const o0 = k * Hs;
+      for (let i = 0; i < N; i++) { y[o0 + i] += at(pos + i) * win[i]; wsum[o0 + i] += win[i]; }
+      prev = pos;
+    }
+    const out = makeBuffer(1, outLen, sr);
+    const d = out.getChannelData(0);
+    for (let i = 0; i < outLen; i++) d[i] = wsum[i] > 1e-3 ? y[i] / wsum[i] : 0;
+    return out;
+  }
+
+  // The backwards clip at a given speed (1 = as recorded). Cached per clip.
+  function revAtSpeed(clip, speed) {
+    if (speed === 1) return clip.rev;
+    if (!clip.slow[speed]) clip.slow[speed] = timeStretch(clip.rev, speed);
+    return clip.slow[speed];
+  }
+
+  // Work out the slow versions in the background so a tap plays instantly.
+  function prepareSlow(clip) {
+    [0.75, 0.5].forEach((sp, i) => setTimeout(() => { if (clip) revAtSpeed(clip, sp); }, 150 + i * 150));
   }
 
   // Boost quiet mic recordings so the loudest moment hits ~-0.5 dBFS.
@@ -451,6 +515,7 @@
         if (peak < 0.01) toast('Hmm, that was really quiet. Check the mic and maybe redo it.', 4000);
         state.clips[which] = clipFrom(buffer);
         clipStore.put(which, state.clips[which].fwd);
+        if (which === 'original') prepareSlow(state.clips.original);
         markDone(buffer.duration);
         refreshPassBtn();
         if (which === 'imitation') $('#btn-to-reveal').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -501,9 +566,14 @@
       }
       // pulse every button that plays the same thing
       const twins = $$(`[data-play="${playBtn.dataset.play}"]`);
-      // The speed choice only slows the backwards original (the hard one to follow).
-      const rate = which === 'original' && dir === 'rev' ? state.revSpeed : 1;
-      playBuffer(dir === 'rev' ? clip.rev : clip.fwd, twins, rate);
+      // The speed choice only slows the backwards original (the hard one to
+      // follow), using the pitch-preserving stretch.
+      if (which === 'original' && dir === 'rev') {
+        ensureCtx(); // start audio inside the tap, before any stretching work
+        playBuffer(revAtSpeed(clip, state.revSpeed), twins);
+      } else {
+        playBuffer(dir === 'rev' ? clip.rev : clip.fwd, twins);
+      }
       return;
     }
     const redoBtn = e.target.closest('[data-redo]');
@@ -524,7 +594,8 @@
     // If the clip is playing, restart it at the new speed.
     const playBtn = $('#screen-echo [data-play="original-rev"]');
     if (playBtn.classList.contains('playing') && state.clips.original) {
-      playBuffer(state.clips.original.rev, $$('[data-play="original-rev"]'), state.revSpeed);
+      ensureCtx();
+      playBuffer(revAtSpeed(state.clips.original, state.revSpeed), $$('[data-play="original-rev"]'));
     }
   }));
 
@@ -785,6 +856,7 @@
         const buf = makeBuffer(1, rec.data.length, rec.rate);
         buf.getChannelData(0).set(rec.data);
         state.clips[which] = clipFrom(buf, false); // already normalized
+        if (which === 'original') prepareSlow(state.clips.original);
       }
     }
     // Fall back to the furthest screen the saved recordings support.
