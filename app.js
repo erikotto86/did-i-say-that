@@ -24,7 +24,6 @@
 
   // ---------- audio engine ----------
   let ctx = null;
-  let currentSource = null;
   let currentPlayBtns = [];
 
   async function ensureCtx() {
@@ -73,6 +72,13 @@
       const s = c.createBufferSource();
       s.buffer = b; s.connect(c.destination); s.start(0);
     });
+    // Also unlock the <audio> player, so a clip started later without a tap
+    // (the reveal after the host confirms a guess) is allowed to play.
+    if (!player.src) {
+      player.src = URL.createObjectURL(toWav(makeBuffer(1, 240, 24000)));
+      const p = player.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
   }
   document.addEventListener('touchend', unlockAudio, { once: false, passive: true });
   document.addEventListener('click', unlockAudio);
@@ -218,35 +224,75 @@
     };
   }
 
+  // ---------- playback ----------
+  // Clips play as a WAV through one <audio> element, not through the
+  // AudioContext. iOS Safari often leaves an AudioContext silent (suspended or
+  // "interrupted") after the mic was used, the screen locked or the page sat
+  // in the background, and it can only be woken inside a tap; a clip that
+  // arrived from another phone then "plays" with no sound. An <audio> element
+  // started from a tap plays reliably (and ignores the silent switch).
+  const player = new Audio();
+  player.preload = 'auto';
+  const wavCache = new WeakMap();
+  let playerUrl = '';
+  let playToken = 0;
+
+  function toWav(buf) {
+    let blob = wavCache.get(buf);
+    if (blob) return blob;
+    const d = buf.getChannelData(0);
+    const n = d.length;
+    const sr = Math.round(buf.sampleRate);
+    const ab = new ArrayBuffer(44 + n * 2);
+    const v = new DataView(ab);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, d[i])) * 32767), true);
+    blob = new Blob([ab], { type: 'audio/wav' });
+    wavCache.set(buf, blob);
+    return blob;
+  }
+
   function stopPlayback() {
-    if (currentSource) {
-      currentSource.onended = null;
-      try { currentSource.stop(); } catch (_) { /* ignore */ }
-      currentSource = null;
-    }
+    playToken += 1;
+    player.onended = null;
+    player.onerror = null;
+    try { player.pause(); } catch (_) { /* ignore */ }
     currentPlayBtns.forEach((b) => b.classList.remove('playing'));
     currentPlayBtns = [];
   }
 
-  // rate < 1 plays slower (and lower, like a slowed-down tape).
-  async function playBuffer(buffer, btns = [], rate = 1) {
+  // Synchronous up to play(), so it runs inside the tap that called it.
+  function playBuffer(buffer, btns = []) {
     setAudioSession('playback');
-    await ensureCtx();
     stopPlayback();
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.playbackRate.value = rate;
-    src.connect(ctx.destination);
-    currentSource = src;
+    const token = playToken;
+    if (playerUrl) URL.revokeObjectURL(playerUrl);
+    playerUrl = URL.createObjectURL(toWav(buffer));
+    player.src = playerUrl;
     currentPlayBtns = btns;
     btns.forEach((b) => b.classList.add('playing'));
     return new Promise((resolve) => {
-      src.onended = () => {
-        if (currentSource === src) { currentSource = null; }
-        btns.forEach((b) => b.classList.remove('playing'));
+      const finish = () => {
+        if (token === playToken) {
+          btns.forEach((b) => b.classList.remove('playing'));
+          currentPlayBtns = [];
+        }
         resolve();
       };
-      src.start(0);
+      player.onended = finish;
+      player.onerror = finish;
+      const p = player.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch((err) => {
+          if (token !== playToken) { resolve(); return; } // replaced by another play
+          finish();
+          if (err && err.name === 'NotAllowedError') toast('Tap ▶ to listen.');
+        });
+      }
     });
   }
 
@@ -574,7 +620,6 @@
       // The speed choice only slows the backwards original (the hard one to
       // follow), using the pitch-preserving stretch.
       if (which === 'original' && dir === 'rev') {
-        ensureCtx(); // start audio inside the tap, before any stretching work
         playBuffer(revAtSpeed(clip, state.revSpeed), twins);
       } else {
         playBuffer(dir === 'rev' ? clip.rev : clip.fwd, twins);
@@ -599,7 +644,6 @@
     // If the clip is playing, restart it at the new speed.
     const playBtn = $('#screen-echo [data-play="original-rev"]');
     if (playBtn.classList.contains('playing') && state.clips.original) {
-      ensureCtx();
       playBuffer(revAtSpeed(state.clips.original, state.revSpeed), $$('[data-play="original-rev"]'));
     }
   }));
