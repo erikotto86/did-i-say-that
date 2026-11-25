@@ -6,6 +6,8 @@
   'use strict';
 
   const MAX_SECONDS = 10;          // auto-stop long recordings
+  const ONLINE_KEY = 'did-i-say-that:online'; // set while in a multi-phone game
+  let net = null;                  // multi-phone controller (online.js), else null
 
   // ---------- tiny helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -358,6 +360,7 @@
   const SAVE_KEY = 'did-i-say-that:v1';
 
   function save() {
+    if (net) return; // multi-phone games are saved by online.js
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify({
         teams: state.teams, target: state.target, guessing: state.guessing,
@@ -414,8 +417,8 @@
     state.screen = id;
     save();
     $$('.screen').forEach((s) => { s.hidden = s.id !== `screen-${id}`; });
-    $('#scoreboard').hidden = id === 'setup';
-    $('#btn-newgame').hidden = id === 'setup';
+    $('#scoreboard').hidden = ['setup', 'join', 'lobby'].includes(id);
+    $('#btn-newgame').hidden = id === 'setup' || id === 'join';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -515,6 +518,7 @@
         if (peak < 0.01) toast('Hmm, that was really quiet. Check the mic and maybe redo it.', 4000);
         state.clips[which] = clipFrom(buffer);
         clipStore.put(which, state.clips[which].fwd);
+        if (net) net.onClip(which);
         if (which === 'original') prepareSlow(state.clips.original);
         markDone(buffer.duration);
         refreshPassBtn();
@@ -546,6 +550,7 @@
   function discardClip(which) {
     state.clips[which] = null;
     clipStore.del(which);
+    if (net) net.onClip(which);
     recorders[which].reset();
     refreshPassBtn();
   }
@@ -668,11 +673,13 @@
     if (!state.clips.original) return;
     if (!state.secret.trim()) { toast('Type the phrase first.'); $('#secret').focus(); return; }
     $('#secret').blur();
+    if (net) { net.speakerDone(); return; }
     show('echo');
   });
 
   $('#btn-to-reveal').addEventListener('click', () => {
     if (!state.clips.imitation) return;
+    if (net) { net.echoDone(); return; }
     show('reveal');
   });
 
@@ -746,6 +753,7 @@
 
   function lockGuess() {
     if (state.guessLocked || !state.guess.trim()) return;
+    if (net) { $('#guess').blur(); net.guess(state.guess); return; }
     state.guessLocked = true;
     state.pendingScore = judgeGuess(state.secret, state.guess);
     save();
@@ -764,12 +772,16 @@
   $('#btn-guess').addEventListener('click', lockGuess);
 
   $$('[data-override]').forEach((b) => b.addEventListener('click', () => {
+    if (net) { net.override(Number(b.dataset.override)); return; }
     state.pendingScore = Number(b.dataset.override);
     save();
     paintGuess();
   }));
 
-  $('#btn-next').addEventListener('click', () => commitScore(state.pendingScore ?? 0));
+  $('#btn-next').addEventListener('click', () => {
+    if (net) { net.next(); return; }
+    commitScore(state.pendingScore ?? 0);
+  });
 
   function commitScore(pts) {
     $('#btn-next').disabled = true;
@@ -802,6 +814,7 @@
   }
 
   $('#btn-again').addEventListener('click', () => {
+    if (net) { net.rematch(); return; }
     state.teams.forEach((t) => { t.score = 0; });
     state.guessing = 0;
     startTurn();
@@ -811,6 +824,7 @@
   // Abandon the current game: back to setup (team names stay filled in).
   $('#btn-newgame').addEventListener('click', () => {
     if (state.recording) { toast('Finish recording first.'); return; }
+    if (net) { net.leave(); return; }
     if (state.screen !== 'winner' && !window.confirm('Start a new game? Scores and recordings from this game will be lost.')) return;
     resetTurnState();
     state.teams.forEach((t) => { t.score = 0; });
@@ -823,6 +837,7 @@
 
   // ---------- resume after reload ----------
   async function restore() {
+    try { if (localStorage.getItem(ONLINE_KEY)) return; } catch (_) { /* ignore */ } // online.js resumes it
     const s = loadSaved();
     if (!s || !Array.isArray(s.teams) || s.teams.length !== 2) return;
     state.teams = s.teams.map((t, i) => ({ name: String(t.name || `Team ${i + 1}`), score: Number(t.score) || 0 }));
@@ -882,8 +897,14 @@
     w.hidden = false;
   }
 
-  restore().catch((err) => console.warn('[did-i-say-that] restore failed', err));
+  const ready = restore().catch((err) => console.warn('[did-i-say-that] restore failed', err));
 
   // exposed for debugging / automated checks
-  window.__didISayThat = { state, reverseBuffer, get ctx() { return ctx; } };
+  window.__didISayThat = {
+    state, reverseBuffer, get ctx() { return ctx; },
+    // used by online.js (multi-phone play)
+    $, $$, toast, show, paintTeams, paintTurn, paintGuess, showWinner, clipFrom, makeBuffer,
+    prepareSlow, clipStore, judgeGuess, playBuffer, stopPlayback, ONLINE_KEY,
+    ready, setNet(n) { net = n; },
+  };
 })();

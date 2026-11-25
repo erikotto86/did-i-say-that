@@ -25,6 +25,18 @@ To play on a phone you need an HTTPS URL. A plain LAN IP won't do, because iOS b
 5. The game saves itself after every step, so a reload or an accidental refresh picks up where you left off, recordings included. Saved data stays on the device. Starting a new game from the setup screen replaces it.
 6. Teams take turns. The first team to reach the target wins (6, 10 or 16 points).
 
+## Playing on several phones
+
+On the first screen, type your name and tap **Host a game**. You get a 4-letter invite code and a **Share invite link** button. Everyone else opens the game on their own phone and taps **Join with a code**, or just opens the link.
+
+- In the lobby, players pick a team. Each team needs at least one player. The host (★) starts the game and can remove a player.
+- Each phone shows only its own part. The Speaker's phone records and types the phrase. The Echo's phone plays it backwards and records the copy. Everyone gets the flip, and the guessing team types the guess on any of their phones.
+- Speaker and Echo rotate through each team. The host can skip a player who has wandered off.
+- Only the host can change the score, start the next turn, or end the game.
+- A phone that reloads or falls asleep rejoins by itself, the host's included.
+
+How it works: `online.js` connects the phones through a Supabase Realtime channel named after the code. The host's phone holds the game and broadcasts it; the others send it their moves. Recordings are sent phone to phone as 24 kHz audio in small pieces. Nothing is stored on a server. The Supabase URL and publishable key are at the top of `online.js`.
+
 ## Audio notes
 
 - `MediaRecorder` mime type is chosen in this order: `audio/webm;codecs=opus` (Chrome/Firefox), then `audio/mp4` (Safari).

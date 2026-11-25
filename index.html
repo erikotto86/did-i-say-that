@@ -8,7 +8,7 @@
   <title>Did I Say That?</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
   <header class="topbar">
@@ -17,6 +17,7 @@
       <div class="team-chip" data-team="0"><span class="tname"></span><span class="tscore">0</span></div>
       <div class="team-chip" data-team="1"><span class="tname"></span><span class="tscore">0</span></div>
     </div>
+    <div class="room" id="room" hidden></div>
     <button type="button" class="new-game" id="btn-newgame" hidden>↺ New game</button>
   </header>
 
@@ -36,6 +37,15 @@
           </div>
         </div>
         <button class="btn btn-go big" id="btn-start">Let's play</button>
+        <div class="net-box">
+          <div class="net-title">Or play on several phones</div>
+          <label class="field"><span>Your name</span><input id="net-name" maxlength="14" placeholder="e.g. Sam" autocomplete="off" enterkeyhint="done"></label>
+          <div class="row">
+            <button class="btn btn-soft" id="btn-host">Host a game</button>
+            <button class="btn btn-soft" id="btn-join">Join with a code</button>
+          </div>
+          <p class="hint small">The host gets an invite code. Everyone else joins with it on their own phone.</p>
+        </div>
         <details class="howto">
           <summary>How to play</summary>
           <ol>
@@ -49,12 +59,50 @@
       </div>
     </section>
 
+    <!-- JOIN (multi-phone) -->
+    <section class="screen" id="screen-join" hidden>
+      <div class="card">
+        <h2>Join a game</h2>
+        <label class="field"><span>Invite code</span><input id="join-code" class="code-input" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"></label>
+        <label class="field"><span>Your name</span><input id="join-name" maxlength="14" placeholder="e.g. Sam" autocomplete="off" enterkeyhint="go"></label>
+        <button class="btn btn-go big" id="btn-join-go">Join</button>
+        <button class="btn btn-soft" id="btn-join-back">Back</button>
+      </div>
+    </section>
+
+    <!-- LOBBY (multi-phone) -->
+    <section class="screen" id="screen-lobby" hidden>
+      <div class="card center">
+        <div class="step">Invite code</div>
+        <div class="code" id="lobby-code"></div>
+        <button class="btn btn-soft" id="btn-share">Share invite link</button>
+        <div class="lobby-teams">
+          <div class="lobby-team" data-team="0"><div class="lt-name"></div><div class="lt-list"></div><button class="btn btn-mini" data-join-team="0">Switch here</button></div>
+          <div class="lobby-team" data-team="1"><div class="lt-name"></div><div class="lt-list"></div><button class="btn btn-mini" data-join-team="1">Switch here</button></div>
+        </div>
+        <button class="btn btn-go big" id="btn-net-start">Start the game</button>
+        <p class="hint" id="lobby-note"></p>
+      </div>
+    </section>
+
+    <!-- WAITING (multi-phone: someone else's turn) -->
+    <section class="screen" id="screen-wait" hidden>
+      <div class="card center">
+        <div class="trophy" id="wait-emoji">⏳</div>
+        <h2 id="wait-title"></h2>
+        <p class="hint" id="wait-text"></p>
+        <button class="btn btn-soft" id="btn-skip" hidden>Pick someone else</button>
+      </div>
+    </section>
+
     <!-- SPEAKER RECORDS -->
     <section class="screen" id="screen-speaker" hidden>
       <div class="card">
         <div class="step">Step 1 of 3 · Speaker</div>
-        <h2><span class="other-team"></span>, pick a Speaker.</h2>
-        <p class="hint"><span class="active-team"></span> — no peeking, no listening! Record a short phrase or song lyric (2–4 seconds works best).</p>
+        <h2 class="solo-only"><span class="other-team"></span>, pick a Speaker.</h2>
+        <p class="hint solo-only"><span class="active-team"></span> — no peeking, no listening! Record a short phrase or song lyric (2–4 seconds works best).</p>
+        <h2 class="net-only">You're the Speaker!</h2>
+        <p class="hint net-only">Go where <span class="active-team"></span> can't hear you, then record a short phrase or song lyric (2–4 seconds works best).</p>
 
         <div class="recorder" id="rec-original">
           <button class="rec-btn" data-role="rec"><span class="dot"></span><span class="label">Record</span></button>
@@ -68,7 +116,7 @@
             <button class="btn btn-soft" data-play="original-fwd">▶ Check it</button>
             <button class="btn btn-soft" data-redo="original">↺ Redo</button>
           </div>
-          <button class="btn btn-go big" id="btn-to-echo" disabled>Done — pass to <span class="active-team"></span></button>
+          <button class="btn btn-go big" id="btn-to-echo" disabled>Done — <span class="solo-only">pass to <span class="active-team"></span></span><span class="net-only">send it</span></button>
           <p class="hint small" id="secret-hint">Type the phrase to continue.</p>
         </div>
       </div>
@@ -78,7 +126,8 @@
     <section class="screen" id="screen-echo" hidden>
       <div class="card">
         <div class="step">Step 2 of 3 · Echo</div>
-        <h2><span class="active-team"></span>, pick an Echo.</h2>
+        <h2 class="solo-only"><span class="active-team"></span>, pick an Echo.</h2>
+        <h2 class="net-only">You're the Echo!</h2>
         <p class="hint">Listen to the backwards clip as many times as you like, then record yourself copying it — sounds, rhythm and all.</p>
 
         <button class="btn btn-rev big" data-play="original-rev"><span class="rev-icon">◀◀</span> Play backwards <span class="count" id="rev-count"></span></button>
@@ -120,6 +169,7 @@
           <label class="field"><span>Your team's guess</span><input id="guess" maxlength="80" placeholder="What did they say?" autocomplete="off" enterkeyhint="done"></label>
           <button class="btn btn-go big" id="btn-guess" disabled>🔒 Lock it in</button>
         </div>
+        <p class="hint small" id="net-guess-wait" hidden></p>
 
         <div class="result" id="result" hidden>
           <div class="verdict" id="verdict"></div>
@@ -138,6 +188,7 @@
             </div>
           </div>
           <button class="btn btn-go big" id="btn-next">Next turn ▶</button>
+          <p class="hint small" id="net-next-wait" hidden>Waiting for the host to start the next turn…</p>
         </div>
 
         <div class="replays">
@@ -160,11 +211,13 @@
         <p class="hint" id="winner-score"></p>
         <button class="btn btn-go big" id="btn-again">Rematch</button>
         <button class="btn btn-soft" id="btn-newteams">New teams</button>
+        <p class="hint small" id="net-winner-wait" hidden>The host can start a rematch.</p>
       </div>
     </section>
   </main>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="app.js?v=11"></script>
+  <script src="app.js?v=12"></script>
+  <script src="online.js?v=12"></script>
 </body>
 </html>
