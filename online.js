@@ -42,6 +42,7 @@
   let pool = {};            // clip id -> { which, clip, enc, mine }
   let incoming = {};        // clip id -> chunks received so far
   const have = { original: null, imitation: null }; // ids of the clips in state.clips
+  const pre = { original: null, imitation: null }; // recordings already on their way: { id, clip, done }
   const lastAsk = {};
   const lastResend = {};
 
@@ -172,10 +173,12 @@
   async function sendClip(id) {
     const item = pool[id];
     if (!item) return false;
+    await sleep(0); // let the tap that started this finish painting first
     if (!item.enc) item.enc = encodeClip(item.clip.fwd);
     const { rate, b64 } = item.enc;
     const n = Math.max(1, Math.ceil(b64.length / CHUNK));
     for (let i = 0; i < n; i++) {
+      if (pool[id] !== item) return false; // re-recorded or the turn moved on
       const payload = { id, which: item.which, i, n, rate, d: b64.slice(i * CHUNK, (i + 1) * CHUNK) };
       let ok = false;
       for (let attempt = 0; attempt < 3 && !ok; attempt++) {
@@ -183,7 +186,7 @@
         if (!ok) await sleep(300);
       }
       if (!ok) return false;
-      await sleep(40);
+      await sleep(15);
     }
     return true;
   }
@@ -208,7 +211,7 @@
     if (!G || !n || !pool[n.id]) return;
     if (!(isHost || (pool[n.id].mine && n.from === G.hostId))) return;
     const now = Date.now();
-    if (now - (lastResend[n.id] || 0) < 2500) return;
+    if (now - (lastResend[n.id] || 0) < 1500) return;
     lastResend[n.id] = now;
     sendClip(n.id);
   }
@@ -222,12 +225,12 @@
         if (pool[want]) {
           state.clips[w] = pool[want].clip;
           have[w] = want;
-          if (w === 'original') api.prepareSlow(state.clips[w]);
+          if (w === 'original' && me.id === G.echoId) api.prepareSlow(state.clips[w]); // only the Echo needs the slow versions
           api.clipStore.put(w, state.clips[w].fwd);
         } else {
           const now = Date.now();
-          const busy = incoming[want] && now - incoming[want].at < 3000;
-          if (!busy && now - (lastAsk[want] || 0) > 3000) {
+          const busy = incoming[want] && now - incoming[want].at < 1500;
+          if (!busy && now - (lastAsk[want] || 0) > 2000) {
             lastAsk[want] = now;
             send('need', { id: want, from: me.id });
           }
@@ -246,6 +249,8 @@
     have.imitation = null;
     pool = {};
     incoming = {};
+    pre.original = null;
+    pre.imitation = null;
     state.secret = '';
     state.guess = '';
     state.revPlays = 0;
@@ -534,18 +539,32 @@
   }
 
   // ---------- this phone's moves ----------
+  // Start sending a recording the moment it is made, so by the time its
+  // owner taps Done the other phones usually have it already.
+  function presend(which) {
+    const old = pre[which];
+    if (old) delete pool[old.id]; // stops a send still in progress
+    pre[which] = null;
+    const clip = state.clips[which];
+    if (!clip) return;
+    const id = rid();
+    pool[id] = { which, clip, mine: true };
+    pre[which] = { id, clip, done: sendClip(id) };
+  }
+
   async function finishClip(which, btn, makeAction) {
     const clip = state.clips[which];
     if (!clip || sending) return;
     sending = true;
     btn.disabled = true;
     const keyThen = lastKey;
-    const id = rid();
-    pool[id] = { which, clip, mine: true };
-    const ok = (await sendClip(id)) && (await act(makeAction(id)));
+    if (!pre[which] || pre[which].clip !== clip) presend(which);
+    const p = pre[which];
+    let ok = await p.done;
+    if (!ok && pre[which] === p) { p.done = sendClip(p.id); ok = await p.done; } // one more try
+    ok = ok && pre[which] === p && (await act(makeAction(p.id)));
     sending = false;
     if (!ok) {
-      delete pool[id];
       btn.disabled = false;
       toast("Couldn't send that. Check your connection and try again.", 4500);
       return;
@@ -555,7 +574,7 @@
   }
 
   const net = {
-    onClip(which) { have[which] = null; persist(); },
+    onClip(which) { have[which] = null; persist(); presend(which); },
     speakerDone() {
       finishClip('original', $('#btn-to-echo'), (id) => ({ type: 'speakerDone', clipId: id, secret: state.secret.trim() }));
     },
@@ -589,6 +608,7 @@
     setInterval(() => {
       if (!online || !me) return;
       ticks += 1;
+      if (G && confirmed) { reconcile(); paintNet(); } // ask again for a recording that hasn't arrived
       if (isHost) { if (G && ticks % 2 === 0) send('state', G); return; }
       if (!confirmed || Date.now() - lastStateAt > 10000) hello();
       paintRoom();
